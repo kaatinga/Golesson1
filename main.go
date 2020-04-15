@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"github.com/julienschmidt/httprouter"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -24,22 +25,30 @@ var (
 )
 
 type links struct {
-	URLs []string
+	URLs map[string]string
 }
 
-func check(links links, query string) {
-	for _, value := range links.URLs {
-		data, err := http.Get(value)
+func check(links *links, query string) {
+
+	for key, value := range (*links).URLs {
+		fmt.Println("====== Проверяем URL", value)
+		req, err := http.Get(value)
 		if err != nil {
-		    log.Println(err)
+			log.Println(err)
 		}
 
 		var pageData []byte
-		_, err = data.Body.Read(pageData)
+		pageData, err = ioutil.ReadAll(req.Body)
 
-		if strings.Contains(query, string(pageData)) {
+		//fmt.Println("Тело:", string(pageData))
 
+		if !strings.Contains(string(pageData), query) {
+			fmt.Println("Поисковая строка не обнаружена")
+			delete((*links).URLs, key)
+			continue
 		}
+
+		fmt.Println("Поисковая строка обнаружена! Хорошо!")
 	}
 }
 
@@ -72,19 +81,11 @@ func main() {
 	SetUpHandlers(router)
 
 	webServer := http.Server{
-		Addr:    net.JoinHostPort("", port),
-		Handler: router,
-		//TLSConfig:         nil,
+		Addr:              net.JoinHostPort("", port),
+		Handler:           router,
 		ReadTimeout:       1 * time.Minute,
 		ReadHeaderTimeout: 15 * time.Second,
 		WriteTimeout:      1 * time.Minute,
-		//IdleTimeout:       0,
-		//MaxHeaderBytes:    0,
-		//TLSNextProto:      nil,
-		//ConnState:         nil,
-		//ErrorLog:          nil,
-		//BaseContext:       nil,
-		//ConnContext:       nil,
 	}
 
 	fmt.Println("Launching the service on the port:", port, "...")
@@ -117,6 +118,7 @@ func SetUpHandlers(m *Middleware) {
 
 	// главная страница
 	m.router.GET("/", Welcome)
+	m.router.POST("/", Welcome)
 }
 
 // мидлвейр для всех хэндлеров
@@ -139,7 +141,66 @@ func (rw *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // Welcome is the homepage of the service
-func Welcome(w http.ResponseWriter, r *http.Request, actions httprouter.Params) {
+func Welcome(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	var err error
+	switch r.Method {
+	case "POST":
+		var whatToSearch string
 
-	fmt.Fprint(w, "Hello, World!")
+		whatToSearch = r.PostForm.Get("string")
+		fmt.Println("Поисковая строка:", whatToSearch)
+
+		if whatToSearch == "" {
+			fmt.Println("Empty request")
+			http.Error(w, http.StatusText(400), 400)
+			return
+		}
+
+		_, err = fmt.Fprintln(w, "Ниже список ссылак на страницы, в которых найдена поисковая строка:", whatToSearch)
+		if err != nil {
+			http.Error(w, http.StatusText(503), 503)
+			log.Println(err)
+		}
+
+		var links links
+
+		links.URLs = make(map[string]string, 10)
+
+		links.URLs = map[string]string{
+			"3lines":  "https://3lines.club/",
+			"Aramake": "https://www.aramake.ru/",
+		}
+
+		check(&links, whatToSearch)
+
+		for _, value := range links.URLs {
+			_, err = fmt.Fprintln(w, value)
+			if err != nil {
+				http.Error(w, http.StatusText(503), 503)
+				log.Println(err)
+			}
+		}
+	case "GET":
+		_, err = fmt.Fprint(w,
+			`
+
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+</head>
+<body>
+	<form action="/" method="post">
+		<label for="string">Поисковая строка:</label>
+		<input type="text" id="string" name="string" placeholder="Лалала">
+		<input type="submit" value="Искать">
+	</form>
+</body>
+</html>
+
+`)
+		if err != nil {
+			http.Error(w, http.StatusText(503), 503)
+			log.Println(err)
+		}
+	}
 }
