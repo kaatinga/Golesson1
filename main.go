@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -24,32 +25,135 @@ var (
 	moscow *time.Location
 )
 
-type links struct {
+// объекты и методы для хранения паролей
+type Links struct {
+	mx   sync.RWMutex
 	URLs map[string]string
+	Lock bool
 }
 
-func check(links *links, query string) {
+// Lock set
+func (c *Links) SetLock() {
+	c.mx.Lock()
+	defer c.mx.Unlock()
 
-	for key, value := range (*links).URLs {
-		fmt.Println("====== Проверяем URL", value)
-		req, err := http.Get(value)
-		if err != nil {
-			log.Println(err)
-		}
+	// замок
+	c.Lock = true
+}
 
-		var pageData []byte
-		pageData, err = ioutil.ReadAll(req.Body)
+// CheckLock returns Lock status
+func (c *Links) Unlocked() bool {
+	c.mx.RLock()
+	defer c.mx.RUnlock()
 
-		//fmt.Println("Тело:", string(pageData))
+	// замок
+	return !c.Lock
+}
 
-		if !strings.Contains(string(pageData), query) {
-			fmt.Println("Поисковая строка не обнаружена")
-			delete((*links).URLs, key)
-			continue
-		}
+// Delete an URL form the map
+func (c *Links) SetUnlock() {
+	c.mx.Lock()
+	defer c.mx.Unlock()
 
-		fmt.Println("Поисковая строка обнаружена! Хорошо!")
+	// снимаем замок
+	c.Lock = false
+}
+
+func NewAnswers() *Links {
+	return &Links{
+		URLs: make(map[string]string),
+		Lock: false,
 	}
+}
+
+// Delete an URL form the map
+func (c *Links) DeleteUser(URLkey string) {
+	c.mx.Lock()
+	defer c.mx.Unlock()
+
+	// удаляем по ключу
+	delete(c.URLs, URLkey)
+}
+
+// AddURL adds an URL to the map
+func (c *Links) AddURL(key, value string) {
+	c.mx.Lock()
+	defer c.mx.Unlock()
+
+	// добавляем URL
+	c.URLs[key] = value
+}
+
+// Print prints the URLs
+func (c *Links) Print(w http.ResponseWriter) error {
+	c.mx.RLock()
+	defer c.mx.RUnlock()
+
+	// добавляем URL
+	for _, value := range c.URLs {
+		_, err := fmt.Fprintln(w, value)
+		if err != nil {
+			http.Error(w, http.StatusText(503), 503)
+			log.Println(err)
+			return err
+		}
+	}
+
+	return nil
+}
+
+// GetMap returns the URLs
+func (c *Links) GetMap() map[string]string {
+	c.mx.RLock()
+	defer c.mx.RUnlock()
+
+	return c.URLs
+}
+
+// EraseData removes all the data from the map
+func (c *Links) EraseUserData() {
+	c.mx.Lock()
+	defer c.mx.Unlock()
+
+	c.URLs = make(map[string]string)
+}
+
+func ProcessURL(key, URL, query string, resultURLs *Links) {
+	fmt.Println("====== Проверяем URL", URL)
+	req, err := http.Get(URL)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	var pageData []byte
+	pageData, err = ioutil.ReadAll(req.Body)
+
+	if !strings.Contains(string(pageData), query) {
+		fmt.Println("Поисковая строка не обнаружена")
+		return
+	}
+
+	fmt.Println("Поисковая строка обнаружена! Хорошо!")
+	resultURLs.AddURL(key, URL)
+}
+
+func check(sourceURLs, resultURLs *Links, query string) error {
+
+	// указываем что обработка данных не завершена (на случай олимпиарда ссылок)
+	resultURLs.SetLock()
+
+	// безопасно вычитываем карту
+	tempMap := sourceURLs.GetMap()
+
+	// проходимся по ней
+	for key, value := range tempMap {
+		go ProcessURL(key, value, query, resultURLs)
+	}
+
+	// указываем что обработка завершена
+	resultURLs.SetUnlock()
+	return nil
 }
 
 // Middleware wraps julien's router http methods
@@ -71,6 +175,18 @@ func main() {
 	// Устанавливаем сдвиг времени
 	moscow, _ = time.LoadLocation("Europe/Moscow")
 
+	// Переменная для исходных URL
+	var sourceURLs = NewAnswers()
+
+	// Переменная для накопления результата по поиску по URL
+	var resultURL = NewAnswers()
+
+	// устанавливаем исходные URL
+	sourceURLs.URLs = map[string]string{
+		"3lines":  "https://3lines.club/",
+		"Aramake": "https://www.aramake.ru/",
+	}
+
 	// объявляем роутер
 	var router *Middleware
 	router = newMiddleware(
@@ -78,7 +194,9 @@ func main() {
 	)
 
 	// анонсируем хандлеры
-	SetUpHandlers(router)
+	router.router.GET("/", Welcome(sourceURLs, resultURL))
+	router.router.GET("/:action", Welcome(sourceURLs, resultURL))
+	router.router.POST("/", Welcome(sourceURLs, resultURL))
 
 	webServer := http.Server{
 		Addr:              net.JoinHostPort("", port),
@@ -113,18 +231,10 @@ func main() {
 
 }
 
-func SetUpHandlers(m *Middleware) {
-	fmt.Println("Setting up handlers...")
-
-	// главная страница
-	m.router.GET("/", Welcome)
-	m.router.POST("/", Welcome)
-}
-
 // мидлвейр для всех хэндлеров
 func (rw *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log.Println("-------------------", time.Now().In(moscow).Format(http.TimeFormat), "A request is received -------------------")
-	log.Println("The request is from", r.RemoteAddr, "| Method:", r.Method, "| URI:", r.URL.String())
+	fmt.Println("-------------------", time.Now().In(moscow).Format(http.TimeFormat), "A request is received -------------------")
+	fmt.Println("The request is from", r.RemoteAddr, "| Method:", r.Method, "| URI:", r.URL.String())
 
 	if r.Method == "POST" {
 		// проверяем размер POST данных
@@ -136,71 +246,66 @@ func (rw *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
+	fmt.Fprintln(w, "<html lang=ru><head><meta charset=UTF-8></head><body>")
 	rw.router.ServeHTTP(w, r)
+	fmt.Fprint(w, "</body></html>")
+
 }
 
 // Welcome is the homepage of the service
-func Welcome(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	var err error
-	switch r.Method {
-	case "POST":
-		var whatToSearch string
+func Welcome(sourceURLs, resultURLs *Links) httprouter.Handle {
+	return func(w http.ResponseWriter, r *http.Request, actions httprouter.Params) {
+		var err error
+		switch {
+		case actions.ByName("action") == "check":
 
-		whatToSearch = r.PostForm.Get("string")
-		fmt.Println("Поисковая строка:", whatToSearch)
+			fmt.Fprintln(w, "Результаты:<br>")
 
-		if whatToSearch == "" {
-			fmt.Println("Empty request")
-			http.Error(w, http.StatusText(400), 400)
-			return
-		}
+			err = resultURLs.Print(w)
+			if err != nil {
+				http.Error(w, http.StatusText(503), 503)
+				return
+			}
 
-		_, err = fmt.Fprintln(w, "Ниже список ссылак на страницы, в которых найдена поисковая строка:", whatToSearch)
-		if err != nil {
-			http.Error(w, http.StatusText(503), 503)
-			log.Println(err)
-		}
+			fmt.Fprintln(w, "<br><br><a href=/>Новый запрос</a>")
+		case r.Method == "POST":
+			var whatToSearch string
 
-		var links links
+			whatToSearch = r.PostForm.Get("string")
+			fmt.Println("Поисковая строка:", whatToSearch)
 
-		links.URLs = make(map[string]string, 10)
+			if whatToSearch == "" {
+				fmt.Println("Empty request")
+				http.Error(w, http.StatusText(400), 400)
+				return
+			}
 
-		links.URLs = map[string]string{
-			"3lines":  "https://3lines.club/",
-			"Aramake": "https://www.aramake.ru/",
-		}
-
-		check(&links, whatToSearch)
-
-		for _, value := range links.URLs {
-			_, err = fmt.Fprintln(w, value)
+			_, err = fmt.Fprintln(w, "Ищем фращу:", whatToSearch)
 			if err != nil {
 				http.Error(w, http.StatusText(503), 503)
 				log.Println(err)
 			}
-		}
-	case "GET":
-		_, err = fmt.Fprint(w,
-			`
 
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-</head>
-<body>
-	<form action="/" method="post">
-		<label for="string">Поисковая строка:</label>
-		<input type="text" id="string" name="string" placeholder="Лалала">
-		<input type="submit" value="Искать">
-	</form>
-</body>
-</html>
+			if resultURLs.Unlocked() {
+				err = check(sourceURLs, resultURLs, whatToSearch)
+				_, err = fmt.Fprintln(w, "<br>Обработка запущена...")
+			} else {
+				_, err = fmt.Fprintln(w, "<br><br>Обработка уже запущена и ещё не завершена...")
+			}
 
-`)
-		if err != nil {
-			http.Error(w, http.StatusText(503), 503)
-			log.Println(err)
+			fmt.Fprintln(w, "<a href=/check>Просмотр результатов</a>")
+
+		case r.Method == "GET":
+			_, err = fmt.Fprint(w, `<form action="/" method="post">
+						<label for="string">Поисковая строка:</label>
+						<input type="text" id="string" name="string" placeholder="Лалала">
+						<input type="submit" value="Искать">
+					</form>`)
+			fmt.Fprintln(w, "<a href=/check>Просмотр текущих результатов (если ранее запускали)</a>")
+			if err != nil {
+				http.Error(w, http.StatusText(503), 503)
+				log.Println(err)
+			}
 		}
 	}
 }
