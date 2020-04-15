@@ -57,6 +57,7 @@ func (c *Links) SetUnlock() {
 
 	// снимаем замок
 	c.Lock = false
+
 }
 
 func NewAnswers() *Links {
