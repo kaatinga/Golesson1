@@ -257,7 +257,11 @@ func Welcome(sourceURLs, resultURLs *Links) httprouter.Handle {
 		switch {
 		case actions.ByName("action") == "check":
 
-			fmt.Fprintln(w, "Результаты:<br>")
+			_, err = fmt.Fprintln(w, "Результаты:<br>")
+			if err != nil {
+				http.Error(w, http.StatusText(500), 500)
+				return
+			}
 
 			err = resultURLs.Print(w)
 			if err != nil {
@@ -265,7 +269,11 @@ func Welcome(sourceURLs, resultURLs *Links) httprouter.Handle {
 				return
 			}
 
-			fmt.Fprintln(w, "<br><br><a href=/>Новый запрос</a>")
+			_, err = fmt.Fprintln(w, "<br><br><a href=/>Новый запрос</a>")
+			if err != nil {
+				http.Error(w, http.StatusText(500), 500)
+				return
+			}
 		case r.Method == "POST":
 			var whatToSearch string
 
