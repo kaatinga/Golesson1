@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"github.com/julienschmidt/httprouter"
 	"io/ioutil"
@@ -160,13 +159,11 @@ func check(sourceURLs, resultURLs *Links, query string) error {
 // Middleware wraps julien's router http methods
 type Middleware struct {
 	router *httprouter.Router
-	db     *sql.DB
 }
 
 // newMiddleware returns pointer of Middleware
 func newMiddleware(r *httprouter.Router) *Middleware {
-	var db *sql.DB
-	return &Middleware{r, db}
+	return &Middleware{r}
 }
 
 func main() {
